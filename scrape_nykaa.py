@@ -22,6 +22,12 @@ import time
 import pandas as pd
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
+try:
+    from playwright_stealth import stealth_sync
+    _STEALTH = True
+except ImportError:
+    _STEALTH = False
+
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 TOTAL_PAGES    = 135
 OUTPUT_FILE    = "nykaa_products_full.xlsx"
@@ -224,6 +230,8 @@ DETAIL_JS = """
 
 def setup_page(context):
     pg = context.new_page()
+    if _STEALTH:
+        stealth_sync(pg)
     pg.route(BLOCKED_EXTENSIONS, lambda r: r.abort())
     for pat in BLOCKED_PATTERNS:
         pg.route(pat, lambda r: r.abort())
@@ -366,6 +374,12 @@ def scrape_all():
     print(f"  Output   →  {OUTPUT_FILE}")
     print("=" * 70)
 
+    if _STEALTH:
+        print("  [stealth] playwright-stealth is active.")
+    else:
+        print("  [stealth] playwright-stealth not found – using built-in patches.")
+        print("            For better results: pip install playwright-stealth")
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
             headless=True,
@@ -373,9 +387,10 @@ def scrape_all():
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled",
-                "--disable-http2",          # avoids ERR_HTTP2_PROTOCOL_ERROR
+                "--disable-http2",
                 "--disable-web-security",
                 "--lang=en-US,en",
+                "--window-size=1440,900",
             ],
         )
         context = browser.new_context(
@@ -386,18 +401,63 @@ def scrape_all():
             ),
             viewport={"width": 1440, "height": 900},
             locale="en-US",
+            java_script_enabled=True,
             extra_http_headers={
                 "Accept-Language": "en-US,en;q=0.9",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                 "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
                 "sec-ch-ua-mobile": "?0",
                 "sec-ch-ua-platform": '"Windows"',
+                "Upgrade-Insecure-Requests": "1",
             },
         )
-        # Hide the webdriver flag that sites use to detect automation
-        context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
+        # Comprehensive stealth patches injected before every page load
+        context.add_init_script("""
+            // 1. Hide webdriver flag
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            try { delete navigator.__proto__.webdriver; } catch(e){}
+
+            // 2. Mock chrome runtime (absent in headless = bot signal)
+            if (!window.chrome) {
+                window.chrome = {runtime: {}, loadTimes: ()=>{}, csi: ()=>{}, app: {}};
+            }
+
+            // 3. Non-zero plugins list (0 plugins = headless bot)
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => { const p = [1,2,3,4,5]; p.__proto__ = PluginArray.prototype; return p; }
+            });
+
+            // 4. Supported MIME types
+            Object.defineProperty(navigator, 'mimeTypes', {
+                get: () => { const m = [1]; m.__proto__ = MimeTypeArray.prototype; return m; }
+            });
+
+            // 5. Real language list
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+
+            // 6. Platform
+            Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+
+            // 7. Hardware concurrency (0 = bot signal)
+            Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+
+            // 8. Device memory
+            Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+
+            // 9. Notification permission bypass
+            try {
+                const orig = navigator.permissions.query.bind(navigator.permissions);
+                navigator.permissions.query = p =>
+                    p.name === 'notifications'
+                        ? Promise.resolve({state: Notification.permission})
+                        : orig(p);
+            } catch(e) {}
+
+            // 10. Remove Playwright-specific globals
+            ['__playwright', '__pw_manual', '__pw_task_queue'].forEach(k => {
+                try { delete window[k]; } catch(e) {}
+            });
+        """)
         pg = setup_page(context)
 
         # ── Phase 1 ──────────────────────────────────────────────────────────
