@@ -174,10 +174,46 @@ DETAIL_JS = """
     const discount = first('[class*="discount"]', '[class*="Discount"]',
                            '[class*="offer-tag"]', '[class*="save"]');
 
-    // Size / variant
-    const size = first('[class*="size-label"]', '[class*="sizeLabel"]',
-                       '[class*="selected-size"]', '[class*="variant-label"]',
-                       '[class*="pack-size"]');
+    // Size / volume – multiple strategies
+    let size = "";
+
+    // Strategy 1: dedicated size/variant selectors
+    size = first(
+        '[class*="size-label"]', '[class*="sizeLabel"]',
+        '[class*="selected-size"]', '[class*="variant-label"]',
+        '[class*="pack-size"]',   '[class*="packSize"]',
+        '[class*="volume"]',      '[class*="capacity"]',
+        '[class*="net-quantity"]','[class*="netQuantity"]'
+    );
+
+    // Strategy 2: selected / active variant button (e.g. "100 ml" pill)
+    if (!size) {
+        const activeBtn = document.querySelector(
+            '[class*="variant"] [class*="selected"], [class*="variant"] [class*="active"],' +
+            '[class*="size"] button[class*="selected"], [class*="size"] button[class*="active"],' +
+            'button[aria-selected="true"], li[aria-selected="true"]'
+        );
+        if (activeBtn) size = activeBtn.innerText.trim();
+    }
+
+    // Strategy 3: all variant buttons – collect them all as "50ml | 100ml | 200ml"
+    if (!size) {
+        const btns = document.querySelectorAll(
+            '[class*="variant"] button, [class*="size-option"], [class*="sizeOption"],' +
+            '[class*="pack-option"], [class*="packOption"]'
+        );
+        const opts = Array.from(btns)
+            .map(b => b.innerText.trim())
+            .filter(t => /\d/.test(t));
+        if (opts.length) size = opts.join(" | ");
+    }
+
+    // Strategy 4: regex extract from product name / page text (e.g. "100 ml", "50g")
+    if (!size) {
+        const h1Text = (document.querySelector('h1') || {}).innerText || "";
+        const m = h1Text.match(/\d+(\.\d+)?\s*(ml|ML|g|gm|GM|kg|KG|oz|OZ|L|litre|liter)/i);
+        if (m) size = m[0].trim();
+    }
 
     // ── 3. Long-text fields ───────────────────────────────────────────────
     const longText = (selectors) => {
