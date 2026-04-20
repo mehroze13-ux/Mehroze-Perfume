@@ -103,7 +103,7 @@ EXTRACT_JS = """
         );
         if (ratingWrap) {
             var rf = ratingWrap.innerText.trim();
-            var m = rf.match(/([\d.]+)\s*[\(·]\s*([\d,]+)/);
+            var m = rf.match(/([\d.]+)\s*[(\xb7]\s*([\d,]+)/);
             if (m) {
                 ratingValue = m[1];
                 ratingCount = m[2].replace(/,/g, "");
@@ -183,7 +183,17 @@ def scrape_all():
         # Visit homepage first so Cloudflare sets its cookies
         print("  Opening Nykaa homepage to warm up session...")
         driver.get("https://www.nykaa.com/")
-        time.sleep(4)
+        time.sleep(5)
+
+        # Dismiss any popup/overlay (cookie consent, location, etc.)
+        for dismiss_sel in ['button[id*="close"]', 'button[class*="close"]',
+                            'button[class*="dismiss"]', '[class*="modal"] button']:
+            try:
+                btn = driver.find_element(By.CSS_SELECTOR, dismiss_sel)
+                btn.click()
+                time.sleep(1)
+            except Exception:
+                pass
 
         for page_num in range(start_page, TOTAL_PAGES + 1):
             url = BASE_URL.format(page=page_num)
@@ -192,27 +202,24 @@ def scrape_all():
             for attempt in range(3):
                 try:
                     driver.get(url)
+                    time.sleep(3)  # let JS render
 
-                    # Wait for product links to appear
-                    WebDriverWait(driver, 25).until(
-                        EC.presence_of_element_located(
-                            (By.CSS_SELECTOR, 'a[href*="/p/"], [data-at="sku-card"], [class*="product-card"]')
+                    # Scroll slowly to trigger lazy-load
+                    for scroll_pct in [0.25, 0.5, 0.75, 1.0]:
+                        driver.execute_script(
+                            f"window.scrollTo(0, document.body.scrollHeight * {scroll_pct})"
                         )
-                    )
+                        time.sleep(0.5)
 
-                    # Scroll to trigger lazy-load
-                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2)")
-                    time.sleep(0.6)
-                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
-                    time.sleep(0.8)
+                    # On first page, save HTML for debugging
+                    if page_num == start_page:
+                        with open("debug_page1.html", "w", encoding="utf-8") as f:
+                            f.write(driver.page_source)
+                        print("  [debug] Saved page 1 HTML to debug_page1.html")
 
                     success = True
                     break
 
-                except TimeoutException:
-                    # Page loaded but no cards found — still try extracting
-                    success = True
-                    break
                 except WebDriverException as e:
                     print(f"  Page {page_num:>3}  retry {attempt+1}/3: {str(e)[:80]}")
                     if attempt < 2:
