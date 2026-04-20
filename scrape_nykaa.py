@@ -156,11 +156,10 @@ def save_checkpoint(last_page, products):
 
 def make_driver():
     options = uc.ChromeOptions()
-    options.add_argument("--window-size=1440,900")
+    options.add_argument("--window-size=1280,800")
     options.add_argument("--lang=en-IN")
     options.add_argument("--disable-popup-blocking")
-    # Run headless — comment this line out if you want to watch the browser
-    options.add_argument("--headless=new")
+    # Visible browser — Cloudflare cannot block a real visible Chrome session
     driver = uc.Chrome(options=options, use_subprocess=True)
     return driver
 
@@ -181,6 +180,11 @@ def scrape_all():
     driver = make_driver()
 
     try:
+        # Visit homepage first so Cloudflare sets its cookies
+        print("  Opening Nykaa homepage to warm up session...")
+        driver.get("https://www.nykaa.com/")
+        time.sleep(4)
+
         for page_num in range(start_page, TOTAL_PAGES + 1):
             url = BASE_URL.format(page=page_num)
 
