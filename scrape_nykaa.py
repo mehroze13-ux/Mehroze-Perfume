@@ -209,6 +209,9 @@ def scrape_all():
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-blink-features=AutomationControlled",
+                "--disable-http2",
+                "--ignore-certificate-errors",
+                "--disable-web-security",
             ],
         )
         context = browser.new_context(
@@ -220,11 +223,17 @@ def scrape_all():
             viewport={"width": 1440, "height": 900},
             locale="en-IN",
             timezone_id="Asia/Kolkata",
+            extra_http_headers={
+                "Accept-Language": "en-IN,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
         )
         # hide automation fingerprint
-        context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});
+            window.chrome = {runtime: {}};
+        """)
 
         pg = context.new_page()
 
@@ -240,7 +249,16 @@ def scrape_all():
         for page_num in range(start_page, TOTAL_PAGES + 1):
             url = BASE_URL.format(page=page_num)
             try:
-                pg.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                # Retry navigation up to 3 times on network errors
+                for attempt in range(3):
+                    try:
+                        pg.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                        break
+                    except Exception as nav_err:
+                        if attempt == 2:
+                            raise
+                        print(f"  Page {page_num:>3}  retry {attempt+1}/3 after: {nav_err}")
+                        time.sleep(5 * (attempt + 1))
 
                 # Wait for product cards to appear
                 try:
