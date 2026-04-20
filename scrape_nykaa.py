@@ -291,10 +291,30 @@ def goto_with_retry(pg, url, retries=3):
 
 def phase1_collect_links(pg):
     print("\n── Phase 1: Collecting product links from 135 listing pages ──")
-    all_links = []
-    seen = set()
+
+    # Resume from existing checkpoint if present
+    if os.path.exists(LINKS_FILE):
+        with open(LINKS_FILE) as f:
+            data = json.load(f)
+        # Old format = plain list; new format = {"links":[], "done_pages":[]}
+        if isinstance(data, dict):
+            all_links = data.get("links", [])
+            done_pages = set(data.get("done_pages", []))
+        else:
+            all_links = data
+            done_pages = set()
+        print(f"  Resuming: {len(all_links)} links already collected, "
+              f"{len(done_pages)} pages already done.")
+    else:
+        all_links = []
+        done_pages = set()
+
+    seen = set(all_links)
 
     for page_num in range(1, TOTAL_PAGES + 1):
+        if page_num in done_pages:
+            continue
+
         url = BASE_URL.format(page=page_num)
         try:
             goto_with_retry(pg, url)
@@ -315,21 +335,25 @@ def phase1_collect_links(pg):
             new_links = [l for l in links if l not in seen]
             seen.update(new_links)
             all_links.extend(new_links)
+            done_pages.add(page_num)
 
             print(
                 f"  Page {page_num:>3}/{TOTAL_PAGES}"
                 f"  →  {len(new_links):>3} new links"
                 f"  (total {len(all_links)})"
             )
+
+            # Save after every page so interruptions lose no progress
+            with open(LINKS_FILE, "w") as f:
+                json.dump({"links": all_links, "done_pages": list(done_pages)}, f)
+
             time.sleep(DELAY_LISTING)
 
         except Exception as exc:
             print(f"  Page {page_num:>3}  !! ERROR: {exc}")
             time.sleep(4)
 
-    with open(LINKS_FILE, "w") as f:
-        json.dump(all_links, f)
-    print(f"\n  Checkpoint saved: {len(all_links)} links → '{LINKS_FILE}'")
+    print(f"\n  Phase 1 complete: {len(all_links)} links → '{LINKS_FILE}'")
     return all_links
 
 
@@ -499,9 +523,15 @@ def scrape_all():
         # ── Phase 1 ──────────────────────────────────────────────────────────
         if os.path.exists(LINKS_FILE):
             with open(LINKS_FILE) as f:
-                all_links = json.load(f)
-            print(f"\n  Found '{LINKS_FILE}' with {len(all_links)} links.")
-            print("  Skipping Phase 1.  (Delete the file to re-run Phase 1.)\n")
+                data = json.load(f)
+            all_links = data.get("links", data) if isinstance(data, dict) else data
+            done = len(data.get("done_pages", [])) if isinstance(data, dict) else TOTAL_PAGES
+            if done >= TOTAL_PAGES:
+                print(f"\n  Phase 1 already complete: {len(all_links)} links loaded.")
+                print("  Skipping to Phase 2.  (Delete nykaa_links.json to redo Phase 1.)\n")
+            else:
+                print(f"\n  Resuming Phase 1 from page checkpoint ({done}/{TOTAL_PAGES} done).")
+                all_links = phase1_collect_links(pg)
         else:
             all_links = phase1_collect_links(pg)
 
