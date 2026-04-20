@@ -14,13 +14,10 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
-echo "[1/3] Installing Python packages..."
-pip3 install playwright pandas openpyxl --quiet
+echo "[1/2] Installing Python packages..."
+pip3 install undetected-chromedriver selenium pandas openpyxl --quiet
 
-echo "[2/3] Downloading browser for scraping..."
-python3 -m playwright install chromium
-
-echo "[3/3] Starting scraper... (this will take 30-60 minutes for 135 pages)"
+echo "[2/2] Starting scraper... (this will take 45-70 minutes for 135 pages)"
 echo
 python3 scrape_nykaa.py
 

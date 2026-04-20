@@ -17,13 +17,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/3] Installing Python packages...
-pip install playwright pandas openpyxl --quiet
+echo [1/2] Installing Python packages...
+pip install undetected-chromedriver selenium pandas openpyxl --quiet
 
-echo [2/3] Downloading browser for scraping...
-python -m playwright install chromium
-
-echo [3/3] Starting scraper... (this will take 30-60 minutes for 135 pages)
+echo [2/2] Starting scraper... (this will take 45-70 minutes for 135 pages)
 echo.
 python scrape_nykaa.py
 

@@ -1,9 +1,10 @@
 """
-Nykaa Fragrance Scraper
+Nykaa Fragrance Scraper  –  uses undetected-chromedriver (your real Chrome)
 URL: https://www.nykaa.com/fragrance/c/53?page_no=1&sort=popularity&formulation_filter=228729
-Output: nykaa_products.xlsx  (opens in Excel / Google Sheets)
+Output: nykaa_products.xlsx
 
-Run:  python scrape_nykaa.py
+Install:  pip install undetected-chromedriver selenium pandas openpyxl
+Run:      python scrape_nykaa.py
 """
 
 import time
@@ -12,14 +13,18 @@ import json
 import random
 import os
 import pandas as pd
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-TOTAL_PAGES    = 135
-OUTPUT_FILE    = "nykaa_products.xlsx"
+TOTAL_PAGES     = 135
+OUTPUT_FILE     = "nykaa_products.xlsx"
 CHECKPOINT_FILE = "nykaa_checkpoint.json"
-DELAY_MIN      = 2.0   # min seconds between pages
-DELAY_MAX      = 3.5   # max seconds between pages (randomised)
+DELAY_MIN       = 2.5
+DELAY_MAX       = 4.0
 
 BASE_URL = (
     "https://www.nykaa.com/fragrance/c/53"
@@ -29,24 +34,19 @@ BASE_URL = (
 # ─────────────────────────────────────────────────────────────────────────────
 
 EXTRACT_JS = """
-() => {
-    const results = [];
+(function() {
+    var results = [];
 
-    // ── helpers ──────────────────────────────────────────────────────────────
-    const txt = (el, sels) => {
-        for (const s of sels) {
-            const node = el.querySelector(s);
+    function txt(el, sels) {
+        for (var i = 0; i < sels.length; i++) {
+            var node = el.querySelector(sels[i]);
             if (node && node.innerText.trim()) return node.innerText.trim();
         }
         return "";
-    };
-    const attr = (el, sel, at) => {
-        const node = el.querySelector(sel);
-        return node ? (node.getAttribute(at) || "").trim() : "";
-    };
+    }
 
-    // ── find product cards ────────────────────────────────────────────────────
-    const CARD_SELS = [
+    // Find product cards
+    var CARD_SELS = [
         '[data-at="sku-card"]',
         '[class*="product-card"]',
         '[class*="productCard"]',
@@ -54,126 +54,91 @@ EXTRACT_JS = """
         '.css-lrlqb8',
         '.css-d5z3ro',
         '.css-1xchqfd',
-        '[class*="NykaaProduct"]',
     ];
 
-    let cards = [];
-    for (const s of CARD_SELS) {
-        cards = Array.from(document.querySelectorAll(s));
+    var cards = [];
+    for (var s = 0; s < CARD_SELS.length; s++) {
+        cards = Array.from(document.querySelectorAll(CARD_SELS[s]));
         if (cards.length > 0) break;
     }
 
-    // fallback – anchor-based dedup
     if (cards.length === 0) {
-        const seen = new Set();
-        document.querySelectorAll('a[href*="/p/"]').forEach(a => {
-            const card = a.closest('li, article, div[class]') || a;
+        var seen = new Set();
+        document.querySelectorAll('a[href*="/p/"]').forEach(function(a) {
+            var card = a.closest('li, article, div[class]') || a;
             if (!seen.has(card)) { seen.add(card); cards.push(card); }
         });
     }
 
-    for (const card of cards) {
+    for (var i = 0; i < cards.length; i++) {
+        var card = cards[i];
 
-        // ── core fields ──────────────────────────────────────────────────────
-        const name  = txt(card, [
+        var name = txt(card, [
             '[data-at="sku-name"]', '[class*="product-title"]',
             '[class*="productTitle"]', '[class*="ProductTitle"]',
             'h3', 'h4', 'p[class*="name"]',
         ]);
-        const brand = txt(card, [
+        var brand = txt(card, [
             '[data-at="sku-brand"]', '[class*="brand-name"]',
             '[class*="brandName"]', '[class*="BrandName"]',
             'p[class*="brand"]',
         ]);
-        const price = txt(card, [
+        var price = txt(card, [
             '[data-at="sku-selling-price"]', '[class*="selling-price"]',
             '[class*="sellingPrice"]', '[class*="discounted-price"]',
-            '[class*="DiscountedPrice"]', 'span[class*="price"]:not([class*="strike"])',
         ]);
-        const mrp = txt(card, [
+        var mrp = txt(card, [
             '[data-at="sku-mrp"]', '[class*="mrp"]',
             '[class*="strike"]', '[class*="original-price"]',
             's', 'del',
         ]);
+        var discount = txt(card, [
+            '[data-at="sku-discount"]', '[class*="discount"]', 'span[class*="off"]',
+        ]);
 
-        // ── rating: value + count ─────────────────────────────────────────────
-        // Nykaa usually renders "4.2 (1,234)" in adjacent spans or a wrapper
-        let ratingValue = "";
-        let ratingCount = "";
-
-        const ratingWrap = card.querySelector(
-            '[data-at="sku-rating"], [class*="rating-wrapper"], ' +
-            '[class*="ratingWrapper"], [class*="RatingWrapper"], ' +
-            '[class*="star-rating"], [class*="starRating"]'
+        // Rating: try to extract value + count from wrapper
+        var ratingValue = "", ratingCount = "";
+        var ratingWrap = card.querySelector(
+            '[data-at="sku-rating"], [class*="rating-wrapper"], [class*="ratingWrapper"], [class*="star-rating"]'
         );
         if (ratingWrap) {
-            const ratingFull = ratingWrap.innerText.trim();
-            // try to split "4.2 (1,234)" or "4.2 · 1,234"
-            const m = ratingFull.match(/([\d.]+)\s*[\(·]\s*([\d,]+)/);
+            var rf = ratingWrap.innerText.trim();
+            var m = rf.match(/([\d.]+)\s*[\(·]\s*([\d,]+)/);
             if (m) {
                 ratingValue = m[1];
                 ratingCount = m[2].replace(/,/g, "");
             } else {
-                // just a plain number
-                ratingValue = ratingFull.replace(/[^0-9.]/g, "");
+                ratingValue = rf.replace(/[^0-9.]/g, "");
             }
         }
+        if (!ratingValue) ratingValue = txt(card, ['[class*="rating-value"]','[class*="ratingValue"]','[class*="avg-rating"]']);
+        if (!ratingCount) ratingCount = txt(card, ['[class*="rating-count"]','[class*="ratingCount"]','[class*="review-count"]']).replace(/[^0-9]/g,"");
 
-        // fallback selectors for value and count separately
-        if (!ratingValue) {
-            ratingValue = txt(card, [
-                '[class*="rating-value"]', '[class*="ratingValue"]',
-                '[class*="avg-rating"]',   '[class*="avgRating"]',
-            ]);
-        }
-        if (!ratingCount) {
-            ratingCount = txt(card, [
-                '[class*="rating-count"]', '[class*="ratingCount"]',
-                '[class*="review-count"]', '[class*="reviewCount"]',
-                '[class*="num-rating"]',   '[class*="numRating"]',
-            ]).replace(/[^0-9]/g, "");
-        }
-
-        // ── discount ──────────────────────────────────────────────────────────
-        const discount = txt(card, [
-            '[data-at="sku-discount"]', '[class*="discount"]',
-            '[class*="Discount"]', 'span[class*="off"]',
-        ]);
-
-        // ── olfactory / fragrance notes ───────────────────────────────────────
-        // Nykaa sometimes shows tags like "Woody | Floral" or "Top notes: …"
-        const olfactory = txt(card, [
+        var olfactory = txt(card, [
             '[class*="fragrance-notes"]', '[class*="fragranceNotes"]',
-            '[class*="olfactory"]',        '[class*="notes"]',
-            '[class*="tag"]',              '[class*="Tag"]',
+            '[class*="olfactory"]', '[class*="notes"]',
         ]);
-
-        // ── volume / size ─────────────────────────────────────────────────────
-        const volume = txt(card, [
+        var volume = txt(card, [
             '[class*="volume"]', '[class*="Volume"]',
-            '[class*="size"]',   '[class*="Size"]',
-            '[class*="variant"]','[class*="Variant"]',
+            '[class*="size"]', '[class*="variant"]',
         ]);
 
-        // ── link & image ──────────────────────────────────────────────────────
-        const linkEl = card.querySelector('a[href*="/p/"]') || card.querySelector('a');
-        const link   = linkEl ? linkEl.href : "";
-        const imgEl  = card.querySelector('img');
-        const image  = imgEl ? (imgEl.dataset.src || imgEl.src || "") : "";
+        var linkEl = card.querySelector('a[href*="/p/"]') || card.querySelector('a');
+        var link = linkEl ? linkEl.href : "";
+        var imgEl = card.querySelector('img');
+        var image = imgEl ? (imgEl.dataset.src || imgEl.src || "") : "";
 
-        // only keep cards that have meaningful data
         if (name || link) {
             results.push({
-                brand, name, price, mrp, discount,
-                rating_value: ratingValue,
-                rating_count: ratingCount,
-                olfactory_notes: olfactory,
-                volume, link, image,
+                brand: brand, name: name, price: price, mrp: mrp,
+                discount: discount, rating_value: ratingValue,
+                rating_count: ratingCount, olfactory_notes: olfactory,
+                volume: volume, link: link, image: image,
             });
         }
     }
     return results;
-}
+})();
 """
 
 
@@ -189,125 +154,102 @@ def save_checkpoint(last_page, products):
         json.dump({"last_page": last_page, "products": products}, f)
 
 
+def make_driver():
+    options = uc.ChromeOptions()
+    options.add_argument("--window-size=1440,900")
+    options.add_argument("--lang=en-IN")
+    options.add_argument("--disable-popup-blocking")
+    # Run headless — comment this line out if you want to watch the browser
+    options.add_argument("--headless=new")
+    driver = uc.Chrome(options=options, use_subprocess=True)
+    return driver
+
+
 def scrape_all():
     checkpoint = load_checkpoint()
-    start_page  = checkpoint["last_page"] + 1
+    start_page   = checkpoint["last_page"] + 1
     all_products = checkpoint["products"]
 
     if start_page > 1:
-        print(f"  Resuming from page {start_page} ({len(all_products)} products already collected)")
+        print(f"  Resuming from page {start_page} ({len(all_products)} products already)")
 
     print("=" * 64)
     print("  Nykaa Fragrance Scraper  –  135 pages")
     print(f"  Output → {OUTPUT_FILE}")
     print("=" * 64)
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-http2",
-                "--ignore-certificate-errors",
-                "--disable-web-security",
-            ],
-        )
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1440, "height": 900},
-            locale="en-IN",
-            timezone_id="Asia/Kolkata",
-            extra_http_headers={
-                "Accept-Language": "en-IN,en;q=0.9",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            },
-        )
-        # hide automation fingerprint
-        context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});
-            window.chrome = {runtime: {}};
-        """)
+    driver = make_driver()
 
-        pg = context.new_page()
-
-        # Skip heavy assets to speed things up
-        pg.route(
-            "**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2,ttf,eot}",
-            lambda route: route.abort(),
-        )
-        for pattern in ["**/analytics*", "**/gtm*", "**/clevertap*",
-                         "**/hotjar*", "**/facebook*", "**/doubleclick*"]:
-            pg.route(pattern, lambda route: route.abort())
-
+    try:
         for page_num in range(start_page, TOTAL_PAGES + 1):
             url = BASE_URL.format(page=page_num)
-            try:
-                # Retry navigation up to 3 times on network errors
-                for attempt in range(3):
-                    try:
-                        pg.goto(url, wait_until="domcontentloaded", timeout=60_000)
-                        break
-                    except Exception as nav_err:
-                        if attempt == 2:
-                            raise
-                        print(f"  Page {page_num:>3}  retry {attempt+1}/3 after: {nav_err}")
-                        time.sleep(5 * (attempt + 1))
 
-                # Wait for product cards to appear
+            success = False
+            for attempt in range(3):
                 try:
-                    pg.wait_for_selector(
-                        '[data-at="sku-card"], [class*="product-card"], a[href*="/p/"]',
-                        timeout=25_000,
+                    driver.get(url)
+
+                    # Wait for product links to appear
+                    WebDriverWait(driver, 25).until(
+                        EC.presence_of_element_located(
+                            (By.CSS_SELECTOR, 'a[href*="/p/"], [data-at="sku-card"], [class*="product-card"]')
+                        )
                     )
-                except PWTimeout:
-                    pass  # still try extracting
 
-                # Scroll to trigger lazy-load
-                pg.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-                time.sleep(0.5)
-                pg.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                time.sleep(0.8)
+                    # Scroll to trigger lazy-load
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2)")
+                    time.sleep(0.6)
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+                    time.sleep(0.8)
 
-                products = pg.evaluate(EXTRACT_JS)
-                for item in products:
-                    item["page_no"] = page_num
-                all_products.extend(products)
+                    success = True
+                    break
 
-                print(
-                    f"  Page {page_num:>3}/{TOTAL_PAGES}"
-                    f"  →  {len(products):>3} products"
-                    f"  (total {len(all_products)})"
-                )
+                except TimeoutException:
+                    # Page loaded but no cards found — still try extracting
+                    success = True
+                    break
+                except WebDriverException as e:
+                    print(f"  Page {page_num:>3}  retry {attempt+1}/3: {str(e)[:80]}")
+                    if attempt < 2:
+                        time.sleep(6 * (attempt + 1))
+                    else:
+                        raise
 
-                # Checkpoint every 10 pages
-                if page_num % 10 == 0:
-                    save_checkpoint(page_num, all_products)
-                    print(f"  [checkpoint saved at page {page_num}]")
+            if not success:
+                continue
 
-                time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+            products = driver.execute_script(EXTRACT_JS)
+            if products is None:
+                products = []
 
-            except Exception as exc:
-                print(f"  Page {page_num:>3}  !! ERROR: {exc}")
-                save_checkpoint(page_num - 1, all_products)
-                time.sleep(6)
+            for item in products:
+                item["page_no"] = page_num
+            all_products.extend(products)
 
-        browser.close()
+            print(
+                f"  Page {page_num:>3}/{TOTAL_PAGES}"
+                f"  →  {len(products):>3} products"
+                f"  (total {len(all_products)})"
+            )
 
-    # ── Clean up checkpoint ────────────────────────────────────────────────────
+            if page_num % 10 == 0:
+                save_checkpoint(page_num, all_products)
+                print(f"  [checkpoint saved at page {page_num}]")
+
+            time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+
+    except KeyboardInterrupt:
+        print("\n  Interrupted — saving checkpoint...")
+        save_checkpoint(page_num - 1, all_products)
+    finally:
+        driver.quit()
+
     if os.path.exists(CHECKPOINT_FILE):
         os.remove(CHECKPOINT_FILE)
 
-    # ── Save final output ──────────────────────────────────────────────────────
     if not all_products:
-        print("\nNo products found. The site may have blocked the scraper.")
-        print("Try setting headless=False in the script to debug.")
+        print("\nNo products found. Try removing --headless=new from the script to debug.")
         sys.exit(1)
 
     cols = [
@@ -316,7 +258,6 @@ def scrape_all():
         "volume", "link", "image",
     ]
     df = pd.DataFrame(all_products)
-    # Ensure all expected columns exist
     for c in cols:
         if c not in df.columns:
             df[c] = ""
@@ -326,7 +267,6 @@ def scrape_all():
 
     df.to_excel(OUTPUT_FILE, index=False)
     print(f"\nDone!  Saved {len(df)} unique products -> '{OUTPUT_FILE}'")
-    print("  Open this file in Microsoft Excel or Google Sheets.")
 
 
 if __name__ == "__main__":
