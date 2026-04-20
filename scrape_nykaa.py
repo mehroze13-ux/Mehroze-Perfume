@@ -230,6 +230,21 @@ def setup_page(context):
     return pg
 
 
+def goto_with_retry(pg, url, retries=3):
+    """Navigate with retries and increasing back-off on failure."""
+    for attempt in range(1, retries + 1):
+        try:
+            pg.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            return True
+        except Exception as exc:
+            if attempt == retries:
+                raise
+            wait = attempt * 5
+            print(f"    retry {attempt}/{retries-1} after {wait}s  ({exc})")
+            time.sleep(wait)
+    return False
+
+
 def phase1_collect_links(pg):
     print("\n── Phase 1: Collecting product links from 135 listing pages ──")
     all_links = []
@@ -238,7 +253,7 @@ def phase1_collect_links(pg):
     for page_num in range(1, TOTAL_PAGES + 1):
         url = BASE_URL.format(page=page_num)
         try:
-            pg.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            goto_with_retry(pg, url)
             try:
                 pg.wait_for_selector('a[href*="/p/"]', timeout=20_000)
             except PWTimeout:
@@ -280,7 +295,7 @@ def phase2_scrape_details(pg, links):
 
     for i, link in enumerate(links, 1):
         try:
-            pg.goto(link, wait_until="domcontentloaded", timeout=60_000)
+            goto_with_retry(pg, link)
             try:
                 pg.wait_for_selector("h1", timeout=20_000)
             except PWTimeout:
@@ -354,7 +369,14 @@ def scrape_all():
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-http2",          # avoids ERR_HTTP2_PROTOCOL_ERROR
+                "--disable-web-security",
+                "--lang=en-US,en",
+            ],
         )
         context = browser.new_context(
             user_agent=(
@@ -363,6 +385,18 @@ def scrape_all():
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
             viewport={"width": 1440, "height": 900},
+            locale="en-US",
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": '"Windows"',
+            },
+        )
+        # Hide the webdriver flag that sites use to detect automation
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
         pg = setup_page(context)
 
