@@ -281,4 +281,12 @@ def scrape_all():
 
 
 if __name__ == "__main__":
-    scrape_all()
+    try:
+        scrape_all()
+    except Exception as e:
+        import traceback
+        print("\n" + "=" * 64)
+        print("  FATAL ERROR:")
+        print("=" * 64)
+        traceback.print_exc()
+    input("\nPress Enter to close...")
